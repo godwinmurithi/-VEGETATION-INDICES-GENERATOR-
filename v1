@@ -1,0 +1,367 @@
+// ===================================================================
+// VEGETATION INDICES GENERATOR FOR KENYAN TEA FARMS
+// SEASONAL ANALYSIS: 2023-2024
+// Google Earth Engine Script
+// ===================================================================
+
+// STEP 1: IMPORT YOUR STUDY AREA SHAPEFILE
+var roi = ee.FeatureCollection("users/godiewyn54/Bureti_AOI").geometry(); 
+
+// Center map on study area
+Map.centerObject(roi, 11);
+Map.addLayer(roi, {color: 'red'}, 'Study Area');
+
+// ===================================================================
+// STEP 2: DEFINE SEASONAL PERIODS FOR KENYAN TEA
+// ===================================================================
+// Kenya tea growing seasons (adjust based on your specific region):
+// Growing Season: Long rains (March-May) and Short rains (October-November)
+// Picking Season: Typically follows rains - June-August and December-February
+
+var seasons = [
+  // 2023 Growing Season (Long + Short rains)
+  {
+    name: '2023_Growing',
+    start: '2023-03-01',
+    end: '2023-05-31', // Long rains
+    description: '2023 Growing Season (Long Rains)'
+  },
+  {
+    name: '2023_Growing_Short',
+    start: '2023-10-01',
+    end: '2023-11-30', // Short rains
+    description: '2023 Growing Season (Short Rains)'
+  },
+  
+  // 2023 Picking Season
+  {
+    name: '2023_Picking',
+    start: '2023-06-01',
+    end: '2023-08-31', // After long rains
+    description: '2023 Picking Season (Post-Long Rains)'
+  },
+  {
+    name: '2023_Picking_Late',
+    start: '2023-12-01',
+    end: '2024-02-29', // After short rains
+    description: '2023-2024 Picking Season (Post-Short Rains)'
+  },
+  
+  // 2024 Growing Season
+  {
+    name: '2024_Growing',
+    start: '2024-03-01',
+    end: '2024-05-31',
+    description: '2024 Growing Season (Long Rains)'
+  },
+  {
+    name: '2024_Growing_Short',
+    start: '2024-10-01',
+    end: '2024-11-30',
+    description: '2024 Growing Season (Short Rains)'
+  },
+  
+  // 2024 Picking Season
+  {
+    name: '2024_Picking',
+    start: '2024-06-01',
+    end: '2024-08-31',
+    description: '2024 Picking Season (Post-Long Rains)'
+  }
+];
+
+// Simplified: One composite per year per season type
+var simplifiedSeasons = [
+  {
+    name: '2023_Growing',
+    start: '2023-03-01',
+    end: '2023-05-31',
+    description: '2023 Growing Season'
+  },
+  {
+    name: '2023_Picking',
+    start: '2023-06-01',
+    end: '2023-08-31',
+    description: '2023 Picking Season'
+  },
+  {
+    name: '2024_Growing',
+    start: '2024-03-01',
+    end: '2024-05-31',
+    description: '2024 Growing Season'
+  },
+  {
+    name: '2024_Picking',
+    start: '2024-06-01',
+    end: '2024-08-31',
+    description: '2024 Picking Season'
+  }
+];
+
+// ===================================================================
+// STEP 3: FUNCTION TO CALCULATE VEGETATION INDICES
+// ===================================================================
+
+function addVegetationIndices(image) {
+  // NDVI (Normalized Difference Vegetation Index)
+  var ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI');
+  
+  // EVI (Enhanced Vegetation Index)
+  var evi = image.expression(
+    '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))', {
+      'NIR': image.select('B8'),
+      'RED': image.select('B4'),
+      'BLUE': image.select('B2')
+    }).rename('EVI');
+  
+  // SAVI (Soil Adjusted Vegetation Index)
+  var savi = image.expression(
+    '((NIR - RED) / (NIR + RED + L)) * (1 + L)', {
+      'NIR': image.select('B8'),
+      'RED': image.select('B4'),
+      'L': 0.5
+    }).rename('SAVI');
+  
+  // NDWI (Normalized Difference Water Index) - useful for moisture detection
+  var ndwi = image.normalizedDifference(['B3', 'B8']).rename('NDWI');
+  
+  // GNDVI (Green Normalized Difference Vegetation Index) - sensitive to chlorophyll
+  var gndvi = image.normalizedDifference(['B8', 'B3']).rename('GNDVI');
+  
+  // NBR (Normalized Burn Ratio) - useful for detecting stress/fire
+  var nbr = image.normalizedDifference(['B8', 'B12']).rename('NBR');
+  
+  return image.addBands([ndvi, evi, savi, ndwi, gndvi, nbr]);
+}
+
+// ===================================================================
+// STEP 4: CLOUD MASKING FUNCTION
+// ===================================================================
+
+function maskS2clouds(image) {
+  var qa = image.select('QA60');
+  var cloudBitMask = 1 << 10;
+  var cirrusBitMask = 1 << 11;
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  return image.updateMask(mask).divide(10000);
+}
+
+// ===================================================================
+// STEP 5: CREATE SEASONAL COMPOSITES WITH INDICES
+// ===================================================================
+
+var seasonalComposites = simplifiedSeasons.map(function(season) {
+  var composite = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+    .filterDate(season.start, season.end)
+    .filterBounds(roi)
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+    .map(maskS2clouds)
+    .map(addVegetationIndices)
+    .median()
+    .clip(roi);
+  
+  return composite.set({
+    'season_name': season.name,
+    'description': season.description,
+    'system:time_start': ee.Date(season.start).millis()
+  });
+});
+
+var seasonalCollection = ee.ImageCollection.fromImages(seasonalComposites);
+
+// ===================================================================
+// STEP 6: VISUALIZATION PARAMETERS
+// ===================================================================
+
+var ndviVis = {min: 0, max: 0.8, palette: ['red', 'yellow', 'green']};
+var eviVis = {min: 0, max: 0.8, palette: ['brown', 'yellow', 'darkgreen']};
+var saviVis = {min: 0, max: 0.6, palette: ['white', 'lightgreen', 'darkgreen']};
+var ndwiVis = {min: -0.5, max: 0.5, palette: ['brown', 'white', 'blue']};
+var rgbVis = {min: 0, max: 0.3, bands: ['B4', 'B3', 'B2']};
+
+// ===================================================================
+// STEP 7: DISPLAY INDICES FOR EACH SEASON
+// ===================================================================
+
+// 2023 Growing Season
+var growing2023 = seasonalCollection.filter(ee.Filter.eq('season_name', '2023_Growing')).first();
+Map.addLayer(growing2023, rgbVis, '2023 Growing - RGB', false);
+Map.addLayer(growing2023.select('NDVI'), ndviVis, '2023 Growing - NDVI');
+Map.addLayer(growing2023.select('EVI'), eviVis, '2023 Growing - EVI', false);
+
+// 2023 Picking Season
+var picking2023 = seasonalCollection.filter(ee.Filter.eq('season_name', '2023_Picking')).first();
+Map.addLayer(picking2023, rgbVis, '2023 Picking - RGB', false);
+Map.addLayer(picking2023.select('NDVI'), ndviVis, '2023 Picking - NDVI', false);
+Map.addLayer(picking2023.select('EVI'), eviVis, '2023 Picking - EVI', false);
+
+// 2024 Growing Season
+var growing2024 = seasonalCollection.filter(ee.Filter.eq('season_name', '2024_Growing')).first();
+Map.addLayer(growing2024, rgbVis, '2024 Growing - RGB', false);
+Map.addLayer(growing2024.select('NDVI'), ndviVis, '2024 Growing - NDVI', false);
+Map.addLayer(growing2024.select('EVI'), eviVis, '2024 Growing - EVI', false);
+
+// 2024 Picking Season
+var picking2024 = seasonalCollection.filter(ee.Filter.eq('season_name', '2024_Picking')).first();
+Map.addLayer(picking2024, rgbVis, '2024 Picking - RGB', false);
+Map.addLayer(picking2024.select('NDVI'), ndviVis, '2024 Picking - NDVI', false);
+Map.addLayer(picking2024.select('EVI'), eviVis, '2024 Picking - EVI', false);
+
+// ===================================================================
+// STEP 8: CREATE SEASONAL COMPARISON CHART
+// ===================================================================
+
+var chart = ui.Chart.image.seriesByRegion({
+  imageCollection: seasonalCollection.select(['NDVI', 'EVI', 'SAVI']),
+  regions: roi,
+  reducer: ee.Reducer.mean(),
+  scale: 10,
+  xProperty: 'system:time_start',
+  seriesProperty: 'season_name'
+}).setOptions({
+  title: 'Mean Vegetation Indices by Season (2023-2024)',
+  hAxis: {title: 'Season'},
+  vAxis: {title: 'Index Value'},
+  lineWidth: 2
+});
+
+print(chart);
+
+// Print season information
+print('========== SEASONAL COMPOSITES ==========');
+simplifiedSeasons.forEach(function(season) {
+  print(season.description + ': ' + season.start + ' to ' + season.end);
+});
+
+// ===================================================================
+// STEP 9: EXPORT SEASONAL INDICES TO GOOGLE DRIVE
+// ===================================================================
+
+// Get the geometry for exports (handle both FeatureCollection and Geometry)
+var exportRegion = roi;
+
+// Export function for each season
+function exportSeasonalIndices(seasonName, description) {
+  var img = seasonalCollection.filter(ee.Filter.eq('season_name', seasonName)).first();
+  
+  // Export all indices as a single multi-band image
+  Export.image.toDrive({
+    image: img.select(['NDVI', 'EVI', 'SAVI', 'NDWI', 'GNDVI', 'NBR']),
+    description: 'Kenya_Tea_VegIndices_' + seasonName,
+    folder: 'GEE_Kenya_Tea_Seasonal',
+    region: exportRegion,
+    scale: 10,
+    crs: 'EPSG:4326',
+    maxPixels: 1e13
+  });
+  
+  // Export RGB composite for visual reference
+  Export.image.toDrive({
+    image: img.select(['B4', 'B3', 'B2']),
+    description: 'Kenya_Tea_RGB_' + seasonName,
+    folder: 'GEE_Kenya_Tea_Seasonal',
+    region: exportRegion,
+    scale: 10,
+    crs: 'EPSG:4326',
+    maxPixels: 1e13
+  });
+  
+  // Export all Sentinel-2 bands (for deep learning)
+  Export.image.toDrive({
+    image: img.select(['B2', 'B3', 'B4', 'B5', 'B6', 'B7', 'B8', 'B8A', 'B11', 'B12']),
+    description: 'Kenya_Tea_S2Bands_' + seasonName,
+    folder: 'GEE_Kenya_Tea_Seasonal',
+    region: exportRegion,
+    scale: 10,
+    crs: 'EPSG:4326',
+    maxPixels: 1e13
+  });
+}
+
+// Run exports for all seasons
+simplifiedSeasons.forEach(function(season) {
+  exportSeasonalIndices(season.name, season.description);
+});
+
+// ===================================================================
+// OPTIONAL: EXPORT DIFFERENCE IMAGES (CHANGE DETECTION)
+// ===================================================================
+
+// Growing to Picking difference (2023)
+var diff2023 = picking2023.select(['NDVI', 'EVI', 'SAVI'])
+  .subtract(growing2023.select(['NDVI', 'EVI', 'SAVI']))
+  .rename(['NDVI_diff', 'EVI_diff', 'SAVI_diff']);
+
+Export.image.toDrive({
+  image: diff2023,
+  description: 'Kenya_Tea_SeasonalDiff_2023',
+  folder: 'GEE_Kenya_Tea_Seasonal',
+  region: exportRegion,
+  scale: 10,
+  crs: 'EPSG:4326',
+  maxPixels: 1e13
+});
+
+// Growing to Picking difference (2024)
+var diff2024 = picking2024.select(['NDVI', 'EVI', 'SAVI'])
+  .subtract(growing2024.select(['NDVI', 'EVI', 'SAVI']))
+  .rename(['NDVI_diff', 'EVI_diff', 'SAVI_diff']);
+
+Export.image.toDrive({
+  image: diff2024,
+  description: 'Kenya_Tea_SeasonalDiff_2024',
+  folder: 'GEE_Kenya_Tea_Seasonal',
+  region: exportRegion,
+  scale: 10,
+  crs: 'EPSG:4326',
+  maxPixels: 1e13
+});
+
+// ===================================================================
+// STEP 10: PRINT SUMMARY STATISTICS
+// ===================================================================
+
+print('========== STUDY AREA INFO ==========');
+print('Study Area (sq km):', roi.area().divide(1e6));
+print('Number of seasons:', simplifiedSeasons.length);
+print('Available indices: NDVI, EVI, SAVI, NDWI, GNDVI, NBR');
+
+// Calculate statistics for each season
+print('========== SEASONAL STATISTICS ==========');
+
+simplifiedSeasons.forEach(function(season) {
+  var img = seasonalCollection.filter(ee.Filter.eq('season_name', season.name)).first();
+  
+  var stats = img.select(['NDVI', 'EVI', 'SAVI']).reduceRegion({
+    reducer: ee.Reducer.mean().combine({
+      reducer2: ee.Reducer.stdDev(),
+      sharedInputs: true
+    }),
+    geometry: roi,
+    scale: 10,
+    maxPixels: 1e13
+  });
+  
+  print(season.description + ' Statistics:', stats);
+});
+
+// ===================================================================
+// INSTRUCTIONS
+// ===================================================================
+print('-------- USAGE INSTRUCTIONS --------');
+print('1. Upload your shapefile as an asset in GEE');
+print('2. Replace "study_area" at the top with your asset name');
+print('3. Adjust seasonal date ranges if needed (currently Mar-May growing, Jun-Aug picking)');
+print('4. Run the script');
+print('5. Check the map layers and charts');
+print('6. Go to Tasks tab and click RUN for each export');
+print('7. Files will be saved to Google Drive > GEE_Kenya_Tea_Seasonal');
+print('');
+print('EXPORTS INCLUDE:');
+print('- Vegetation indices (NDVI, EVI, SAVI, NDWI, GNDVI, NBR) for each season');
+print('- RGB composites for visual reference');
+print('- All Sentinel-2 bands for deep learning');
+print('- Seasonal difference images for change detection');
+print('');
+print('TOTAL EXPORTS: ~16 images (4 seasons × 3 types + 2 difference images)');
