@@ -10,6 +10,16 @@ This script processes Sentinel-2 satellite imagery to create seasonal composites
 **Time Period**: 2023-2024 (customizable)  
 **Seasons Analyzed**: Growing Season (March-May) and Picking Season (June-August)
 
+### Sample Outputs
+
+**NDVI Visualization** - Vegetation health gradient showing dense vegetation (green) to sparse/bare areas (red)
+
+![NDVI Visualization](Screenshot%202025-12-04%20211321.png)
+
+**Classified Land Cover** - Semantic segmentation results distinguishing different vegetation types
+
+![Classified Output](Screenshot%202025-12-04%20211450.png)
+
 ## 📊 Output Data Products
 
 The script generates 16 GeoTIFF files per run:
