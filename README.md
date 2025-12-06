@@ -288,8 +288,8 @@ If you use this script in your research, please cite:
 ## 👤 Author
 
 **Your Name**
-- GitHub: [@yourusername](https://github.com/yourusername)
-- Email: your.email@example.com
+- Godwin Murithu
+- Email: godwinm@orionterrametrics.co.ke
 
 ## 🙏 Acknowledgments
 
